@@ -1,0 +1,26 @@
+{
+  "name": "Commentator",
+  "main": "./lib/commentator",
+  "version": "0.0.0",
+  "description": "Code comment generator",
+  "keywords": [
+    "comment",
+    "docblock"
+  ],
+  "activationCommands": {
+    "atom-text-editor": [
+      "commentator:parse-enter",
+      "commentator:parse-inline",
+      "commentator:parse-tab"
+    ]
+  },
+  "repository": "https://github.com/twifty/atom-commentator",
+  "license": "MIT",
+  "engines": {
+    "atom": ">=1.0.0 <2.0.0"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "eslint": "^6.6.0"
+  }
+}

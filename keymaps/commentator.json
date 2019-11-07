@@ -1,0 +1,7 @@
+{
+    "atom-text-editor:not([mini])": {
+        "enter":        "commentator:parse-enter",
+        "shift-enter":  "commentator:parse-inline",
+        "tab":          "commentator:parse-tab"
+    }
+}

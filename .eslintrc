@@ -1,0 +1,17 @@
+{
+  "extends": "eslint:recommended",
+  "parserOptions": {
+    "env": {
+      "node": true
+    },
+    "ecmaVersion": 6,
+    "sourceType": "module"
+  },
+  "rules": {
+    "consistent-return": off,
+    "no-console": off,
+    "no-cond-assign": off,
+    "no-fallthrough": off,
+    "no-constant-condition": off
+  }
+}
