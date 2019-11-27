@@ -21,41 +21,77 @@ class Template {
       throw new Error("Expected Array, Point or Range")
   }
 
+  destroy () {
+    if (this.tabLayer) {
+      this.tabLayer.clear()
+      this.tabLayer.destroy()
+      this.tabLayer = null
+    }
+  }
+
   getNextTabRange (point) {
     if (!this.__tabs)
       return null
 
-    point = Point.fromObject(point)
+    if (!this.tabLayer) {
+      this.tabLayer = this.__editor.addMarkerLayer()
 
-    const toRange = (tab) => {
-      const lineText = this.__editor.lineTextForBufferRow(tab.row)
-      if (lineText) {
-        const range = Range.fromObject([
-          [tab.row, lineText.length + tab.negStart],
-          [tab.row, lineText.length + tab.negEnd]
-        ])
-        const rangeText = lineText.substring(range.start.column, range.end.column)
-        return rangeText === tab.value && range
+      for (var i = 0; i < this.__tabs.length; i++) {
+        const tab = this.__tabs[i]
+
+        this.tabLayer.markBufferRange([[tab.row, tab.start], [tab.row, tab.end]], {invalidate: 'inside'})
       }
+
+      // this.__editor.decorateMarkerLayer(this.tabLayer, {type: 'highlight', class: 'covered', onlyNonEmpty: true})
     }
 
     var first = null
-    for (var i = 0; i < this.__tabs.length; i++) {
-      const tabEntry = this.__tabs[i]
-      if (tabEntry) {
-        const tabRange = toRange(tabEntry)
+    for (const marker of this.tabLayer.getMarkers()) {
+      if (!marker.isValid())
+        continue
 
-        if (tabRange) {
-          first = first || tabRange
-          if (point.isLessThan(tabRange.start))
-            return tabRange
-        } else {
-          delete this.__tabs[i]
-        }
-      }
+      const range = marker.getBufferRange();
+      first = first || range
+
+      // console.log(range);
+
+      if (point.isLessThan(range.start))
+        return range
     }
 
     return first
+
+    // point = Point.fromObject(point)
+    //
+    // const toRange = (tab) => {
+    //   const lineText = this.__editor.lineTextForBufferRow(tab.row)
+    //   if (lineText) {
+    //     const range = Range.fromObject([
+    //       [tab.row, lineText.length + tab.negStart],
+    //       [tab.row, lineText.length + tab.negEnd]
+    //     ])
+    //     const rangeText = lineText.substring(range.start.column, range.end.column)
+    //     return rangeText === tab.value && range
+    //   }
+    // }
+    //
+    // var first = null
+    // for (var i = 0; i < this.__tabs.length; i++) {
+    //   const tabEntry = this.__tabs[i]
+    //   if (tabEntry) {
+    //     const tabRange = toRange(tabEntry)
+    //
+    //     if (tabRange) {
+    //       first = first || tabRange
+    //       if (point.isLessThan(tabRange.start))
+    //         return tabRange
+    //     } else {
+    //       delete this.__tabs[i]
+    //     }
+    //   }
+    // }
+    //
+    // return first
   }
 
   getCursorPosition () {
@@ -87,6 +123,8 @@ export class Builder {
   createDocBlock (cursorPosition, template) {
     const node = this.parseCode(cursorPosition.row + 1)
 
+    this.log(node)
+
     return node && this.generateTemplate(node, cursorPosition.row, template);
   }
 
@@ -113,80 +151,124 @@ export class Builder {
     return this.__editor.lineTextForBufferRow(row)
   }
 
-  getCodeBlock (row) {
+  readLineEnd (row) {
     if (!this.__editor)
       return null
 
-    const charIterator = () => {
-      let nextIndex = 0
-      let currLine  = null
-      let read = []
+    return this.__editor.getBuffer().lineEndingForRow(row)
+  }
 
-      const nextLine = () => {
-        if (null != (currLine = this.readLine(row))) {
-          row++
-          nextIndex = 0
-          currLine += '\n'
-        }
-        return currLine
+  getCharIterator (row) {
+    if (!this.__editor)
+      return null
+
+    var nextIndex = 0
+    var currLine  = null
+    var read = []
+
+    const nextLine = () => {
+      if (null != (currLine = this.readLine(row))) {
+        currLine += this.readLineEnd(row)
+        row++
+        nextIndex = 0
       }
+      return currLine
+    }
 
-      return {
-        next: () => {
-          if ((currLine && nextIndex < currLine.length) || nextLine()) {
-            read.push(currLine[nextIndex])
-            return { value: currLine[nextIndex++], done: false }
+    const iter = {
+      blocks: {
+        '(': ['seekToBlockEnd', ')'],
+        '{': ['seekToBlockEnd', '}'],
+        '[': ['seekToBlockEnd', ']'],
+        "'": ['seekToStringEnd', "'", '\\'],
+        '"': ['seekToStringEnd', '"', '\\'],
+      },
+      value: null,
+      done: true,
+      next: () => {
+        if ((currLine && nextIndex < currLine.length) || nextLine()) {
+          read.push(currLine[nextIndex])
+          iter.value = currLine[nextIndex++]
+          iter.done = false
+        } else {
+          iter.value = null
+          iter.done = true
+        }
+
+        return iter
+      },
+      seekToBlockEnd (char) {
+        for (iter.next(); !iter.done; iter.next()) {
+          if (iter.value === char)
+            return true
+
+          if (iter.value in this.blocks) {
+            const args = this.blocks[iter.value]
+            if (!this[args[0]].apply(this, args.slice(1)))
+              return false
           }
-
-          return { value: null, done: true }
-        },
-        result: () => {
-          return read.slice(0, -1).join("")
         }
-      }
-    }
 
-    const chars = charIterator()
-    const seekToClosingChar = (char) => {
-      for (var iter = chars.next(); !iter.done; iter = chars.next()) {
-        switch (iter.value) {
-          case char: return
-          case '(': seekToClosingChar(')'); break
-          case '{': seekToClosingChar('}'); break
-          case '[': seekToClosingChar(']'); break
+        return false
+      },
+      seekToStringEnd (char, esc) {
+        var isEscaped = false
+
+        for (iter.next(); !iter.done; iter.next()) {
+          switch (iter.value) {
+            case esc:
+              isEscaped = !isEscaped
+              break
+            case char:
+              if (!isEscaped)
+                return true
+              // Fall through
+            default:
+              isEscaped = false
+              break
+          }
         }
+
+        return false
+      },
+      get result () {
+        return read.join("")
       }
     }
 
-    var type = null
-    for (var iter = chars.next(); !iter.done && !type; iter = chars.next()) {
-      switch (iter.value) {
-        case '(':
-          type = "function"
-          seekToClosingChar(')')
-          break
-        case '{':
-          type = "object"
-          seekToClosingChar('}')
-          seekToClosingChar(';')
-          break
-        case ';':
-          type = "variable"
-          break
-        case '[':
-          seekToClosingChar(']')
-          break
-      }
-    }
+    return iter
+  }
 
-    return chars.result()
+  // eslint-disable-next-line
+  getCodeBlock (iter) {
+    throw new Error(`${arguments.callee.name}() not implemented`)
   }
 
   getTree (row) {
+    /*
+      NOTE: Fetching the already parsed tree from the editor will fail because
+      when the opening "/**" is on the preceeding line, the parser thinks all
+      following lines are a comment.
+
+      Also, building a tree by adding lines as they are required fails for three
+      reasons. 1) Depending on the grammar the tree will create ERROR nodes,
+      especially for unclosed braces. 2) There is no node.edit function available
+      in javascript, meaning a stored node in a partially iterated tree cannot
+      be updated correctly. 3) Due to node hierarchy, A tree iterator will have
+      a difficult time knowing when and where to request a new line to be read.
+
+      The best solution is to iterate each character from the starting row until
+      a certain character is detected signalling the end of the code block. That
+      whole range of characters can then be parsed just once. The tree parser
+      will treat the given code as being in a 'global' scope. However, some
+      languages may not allow such code in a global scope and the tree parser
+      may still error. Those languages can override these methods in order to
+      generate a parsable tree.
+    */
     if (!(this.__editor && this.__editor.languageMode && this.__editor.languageMode.tree))
       return null
 
-    const code = this.getCodeBlock(row)
+    const code = this.getCodeBlock(this.getCharIterator(row))
     const grammar = this.__editor.languageMode.getGrammar()
     const parser = new Parser();
 
@@ -205,9 +287,8 @@ export class Builder {
     const line = this.readLine(cursor.row)
     const pre = line.substring(0, cursor.column)
     const aft = line.substring(cursor.column)
-    // return the name of a function and any args to pass to that function
-
     var match
+
     for (const expr of this.getExpressions()) {
       if (match = expr.call(this, {line, pre, aft, cursor, range})) {
         return match
@@ -221,19 +302,15 @@ export class Builder {
   }
 
   generateTemplate (node, lineNum, prototype) {
-    // TODO - allow users to define template function
-
     const tabs = []
     const lines = []
     const prefix = prototype.body && prototype.body.length
     const Tab = (str) => `{{__tab_start__}}${str}{{__tab_end__}}`
-    const Align = (num) => " ".repeat(num) //`{{__align__}}${" ".repeat(num)}{{__align__}}`
+    const Align = (num) => " ".repeat(num)
     const Line = (...segments) => {
       var lineText = segments.filter(s => s).join("")
       var LineTabs = []
       var offsetAdjust = 0
-
-      // lineText = lineText.replace(/{{__align__}}(\s*){{__align__}}/, '$2')
 
       lineText = prototype.body + lineText.replace(/{{__tab_start__}}(.*?){{__tab_end__}}/g, (match, str, offset) => {
         LineTabs.push({
@@ -248,6 +325,8 @@ export class Builder {
       tabs.push(...LineTabs.map(tab => {
         return {
           row: lineNum,
+          start: tab.start,
+          end: tab.end,
           negStart: tab.start - lineText.length,
           negEnd: tab.end - lineText.length,
           value: tab.value
@@ -265,7 +344,8 @@ export class Builder {
     }
 
     if (node) {
-      this.defaultTemplate(node, {Line, Tab, Align})
+      const template = this.getTemplate()
+      template(node, {Line, Tab, Align})
     } else if (Array.isArray(prototype.body)) {
       return new Template(prototype.body, prototype.range)
     } else {
@@ -300,6 +380,8 @@ export class Builder {
         const tail = first.substring(range.end.column)
         const match = body.match(/^\/\*(.*)\*\/$/)
         if (match) {
+          this.log("existingTest::singleLine Passed")
+
           return {
             method: "removeInline",
             template: {
@@ -327,6 +409,8 @@ export class Builder {
           const body = [ head_pre + head_aft_match[1] ]
           body[ range.end.row - range.start.row ] = tail_pre_match[1] + tail_aft
 
+          this.log("existingTest::multiLine Passed")
+
           return {
             method: "removeInline",
             template: {
@@ -351,6 +435,8 @@ export class Builder {
         const body = first.substring(range.start.column, range.end.column)
         const tail = first.substring(range.end.column)
 
+        this.log("inlineTest::singleLine Passed")
+
         return {
           method: "createInline",
           template: {
@@ -372,6 +458,8 @@ export class Builder {
         const body = [ head_pre + "/*" + head_aft ]
         body[ range.end.row - range.start.row ] = tail_pre + "*/" + tail_aft
 
+        this.log("inlineTest::multiLine Passed")
+
         return {
           method: "createInline",
           template: {
@@ -389,13 +477,16 @@ export class Builder {
   singleLineTest ({pre, aft, cursor}) {
     const match = pre.match(/^(\s*)\/\/.*$/)
 
-    return match && {
-      method: "createContinuation",
-      template: {
-        head: pre,
-        body: match[1] + "// " + aft,
-        cursor: Point.fromObject([cursor.row + 1, match[1].length + 3])
-      }
+    if (match) {
+        this.log("singleLineTest Passed")
+        return {
+          method: "createContinuation",
+          template: {
+            head: pre,
+            body: match[1] + "// " + aft,
+            cursor: Point.fromObject([cursor.row + 1, match[1].length + 3])
+          }
+        }
     }
   }
 
@@ -403,6 +494,7 @@ export class Builder {
     const match = pre.match(/^(\s*)\/\*\*$/)
 
     if (match && aft.match(/^\s*$/) && !this.isNextLineContinuation(cursor.row)) {
+      this.log("docBlockTest Passed")
       return {
         method: "createDocBlock",
         template: {
@@ -418,8 +510,10 @@ export class Builder {
   singleToMultiTest ({pre, aft, cursor}) {
     const matchPre = pre.match(/^(\s*)\/\*(.*)$/)
     const matchAft = aft.match(/^(.*?)(?:\*\/)?\s*$/)
+    const matchClose = pre.match(/\*\//)
 
-    if (matchPre && matchAft && !this.isNextLineContinuation(cursor.row)) {
+    if (matchPre && !matchClose && matchAft && !this.isNextLineContinuation(cursor.row)) {
+      this.log(`singleToMultiTest Passed "${pre}", "${aft}"`)
       return {
         method: "createGeneric",
         template: {
@@ -436,6 +530,7 @@ export class Builder {
     const match = pre.match(/^(\s*)(?:\/|\s\*)/)
 
     if (match && this.isNextLineContinuation(cursor.row)) {
+      this.log("continuationTest Passed")
       return {
         method: "createContinuation",
         template: {
@@ -458,7 +553,7 @@ export class Builder {
     ]
   }
 
-  defaultTemplate () {
+  getTemplate () {
     throw new Error(`${arguments.callee.name}() not implemented`)
   }
 

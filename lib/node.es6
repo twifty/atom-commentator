@@ -7,22 +7,52 @@ export class Node {
     this.__name       = ""
     this.__types      = []
     this.__children   = []
+    this.__flags      = []
+  }
+
+  clone () {
+    const other = new Node()
+
+    other.__types    = [ ...this.__types ]
+    other.__children = [ ...this.__children ]
+    other.__flags    = [ ...this.__flags ]
+
+    return other
+  }
+
+  getParent () {
+    return this.__parent
   }
 
   setType (type) {
-    this.__types = []
-    if (type)
-      this.addType(type)
+    if (Array.isArray(type))
+      this.__types = [ ...type ]
+    else if (type)
+      this.__types = [ type ]
+    else
+      this.__types = []
   }
 
   addType (type) {
     this.__types.push(type)
   }
 
-  is (expr) {
+  hasType (expr) {
     const match = this.__types.join(" ").match(expr)
 
     return match && match[0]
+  }
+
+  getType (index) {
+    if (index < 0)
+      return this.__types[this.__types.length + index]
+    return this.__types[index]
+  }
+
+  getTypes (del = " ") {
+    if (del != null)
+      return this.__types.join(del)
+    return this.__types
   }
 
   setName (name) {
@@ -33,12 +63,53 @@ export class Node {
     this.__class = name
   }
 
+  setFlag (flag) {
+    if (Array.isArray(flag))
+      this.__flags = [ ...flag ]
+    else if (flag)
+      this.__flags = [ flag ]
+    else
+      this.__flags = []
+  }
+
+  addFlag (flag) {
+    this.__flags.push(flag)
+  }
+
+  hasFlag (expr) {
+    const match = this.__flags.join(" ").match(expr)
+
+    return match && match[0]
+  }
+
+  getFlags (del = " ") {
+    if (del != null)
+      return this.__flags.join(del)
+    return this.__flags
+  }
+
+  addChild (node) {
+    this.__children.push(node)
+  }
+
+  hasChildren () {
+    return this.__children.length
+  }
+
   get type () {
     return this.__types.join(" ")
   }
 
+  get class () {
+    return this.__class
+  }
+
   get name () {
     return this.__name
+  }
+
+  get flags () {
+    return this.__flags.join(" ")
   }
 
   get maxNameLength () {
@@ -74,68 +145,5 @@ export class Node {
       else
         yield *child
     }
-  }
-}
-
-export class Scope extends Node {
-  constructor() {
-    super()
-
-    this.__name = "global"
-    this.__scopes = [ new Node(this) ]
-    this.__active = this.__scopes[0]
-  }
-
-  setType (type) {
-    this.__active.setType(type)
-  }
-
-  addType (type) {
-    this.__active.addType(type)
-  }
-
-  setName (name) {
-    this.__active.setName(name)
-  }
-
-  addName (name) {
-    // finalize active if it has a name
-    if (this.__active.__name) {
-      // Copy will share children and types
-      const copy = new Node(this.__active.__parent)
-
-      this.__active.__parent.__children.push(this.__active)
-      this.__active = copy
-      this.__scopes[this.__scopes.length - 1] = copy
-    }
-
-    this.__active.setName(name)
-  }
-
-  setClass (name) {
-    this.__active.setClass(name)
-  }
-
-  finalize () {
-    this.__active.__parent.__children.push(this.__active)
-    this.__active = new Node(this.__active.__parent)
-    this.__scopes[this.__scopes.length - 1] = this.__active
-  }
-
-  enter () {
-    this.__scopes.push( new Node(this.__active) )
-    this.__active = this.__scopes[this.__scopes.length - 1]
-  }
-
-  leave () {
-    if (this.__scopes.length <= 1)
-      throw new Error("No more scopes")
-
-    this.__scopes.pop()
-    this.__active = this.__scopes[this.__scopes.length - 1]
-  }
-
-  get node () {
-    return this.__children[0]
   }
 }

@@ -1,12 +1,13 @@
 /** @babel */
 /* global atom console require __dirname */ // eslint-disable-line
 
-import { CompositeDisposable } from 'atom'
+import { CompositeDisposable, File } from 'atom'
+import path from "path"
 
 export class Manager {
   constructor () {
     this.__builders = []
-    this.debug = true
+    this.debug = false
     this.subscriptions = new CompositeDisposable()
 
     this.subscriptions.add(atom.workspace.getCenter().observeActivePaneItem(paneItem => {
@@ -17,33 +18,75 @@ export class Manager {
   destroy () {
     this.subscriptions.dispose()
     this.editor = null
+
+    if (this.__activeTemplate) {
+      this.__activeTemplate.destroy()
+      this.__activeTemplate = null
+    }
   }
 
   getBuilder () {
     if (!this.editor)
       return
 
-    const language = this.editor.getGrammar().name
+    const language = this.editor.getGrammar().name.replace(/ /g, '-').toLowerCase()
+    const template = this.loadTemplate(language)
+    const cacheKey = (template && template.path) || language
 
-    if (this.__builders[language] == null) {
+    if (this.__builders[cacheKey] == null) {
       try {
-        const Builder = require(`${__dirname}/languages/${language.replace(/ /g, '-').toLowerCase()}.es6`)
-
-        if (Builder) {
-          this.log(`Loaded builder for "${language}"`)
-        } else {
-          this.log(`Builder for "${language}" is not available!`)
-        }
-
-        this.__builders[language] = new Builder(this.debug)
-      } catch (_) {
+        const Builder = require(`${__dirname}/languages/${language}.es6`)
+        this.log(`Loaded builder for "${language}"`)
+        this.__builders[cacheKey] = new Builder({debug: this.debug, template: template && template.func})
+      } catch (err) {
         this.log(`Error while loading builder for "${language}"!`)
-        this.log(_)
-        this.__builders[language] = false
+        this.log(err)
+        this.__builders[cacheKey] = false
       }
     }
 
-    return this.__builders[language]
+    return this.__builders[cacheKey]
+  }
+
+  loadTemplate (language) {
+    const result = {}
+    const fetch = (file) => {
+      try {
+        result.func = require(file)
+        if (result.func)
+          result.path = path
+        return result.func
+      } catch (err) {
+        const promise = (new File(file)).exists()
+        promise.then((exists) => {
+          if (exists)
+            throw err
+        })
+      }
+    }
+
+    var template = null
+
+    /* Load a template from package.json */
+    const projectPath = atom.project.relativizePath(this.editor.getPath())[0]
+    const config = fetch(path.join(projectPath, "package.json"))
+    if (config && config.commentator && language in config.commentator) {
+      if (path.isAbsolute(config.commentator[language]))
+        template = fetch(config.commentator[language])
+      else
+        template = fetch(path.join(projectPath, config.commentator[language]))
+    }
+
+    /* Load a global template */
+    if (!template) {
+      const atomPath = atom.getUserInitScriptPath()
+      template = fetch(path.join(path.dirname(atomPath), "commentator", language))
+    }
+
+    if (typeof result.func === "function")
+      return result
+
+    return false
   }
 
   onTab () {
@@ -74,12 +117,32 @@ export class Manager {
     if (!builder)
       return false
 
-    const cursors = this.editor.getCursors()
-    const position = cursors[0].getBufferPosition()
+    const selections = this.editor.getSelectionsOrderedByBufferPosition()
+    if (selections.length != 1)
+      return
+
+    /*
+      Selected text would normally be replaced with a newline. It needs
+      removing before being scanned so that the builder can read the
+      correct lines.
+    */
+    const check = this.editor.createCheckpoint()
+
+    if (!selections[0].isEmpty()) {
+      const range = selections[0].getBufferRange()
+      this.editor.setTextInBufferRange(range, "")
+    }
+
+    if (this.__activeTemplate) {
+      this.__activeTemplate.destroy()
+      this.__activeTemplate = null
+    }
+
+    // const cursors = this.editor.getCursors()
+    const cursor = selections[0].cursor
+    const position = cursor.getBufferPosition()
     const template = builder.createTemplate(position, this.editor)
     var tab, range, point
-
-    this.__activeTemplate = null
 
     if (template) {
       console.log(template);
@@ -96,11 +159,15 @@ export class Manager {
         // Store the template for tab handling
         this.__activeTemplate = template
       } else if (point = template.getCursorPosition()) {
-        cursors[0].setBufferPosition(point)
+        cursor.setBufferPosition(point)
       }
+
+      this.editor.groupChangesSinceCheckpoint(check)
 
       return true
     }
+
+    this.editor.revertToCheckpoint(check)
 
     return false
   }
@@ -113,9 +180,6 @@ export class Manager {
     const selections = this.editor.getSelectionsOrderedByBufferPosition()
 
     for (let c = selections.length - 1; c >= 0; --c) {
-      // if (selections[c].isEmpty())
-      //   continue
-
       const oldRange = selections[c].getBufferRange()
       const position = selections[c].isReversed() ? oldRange.start : oldRange.end
       const template = builder.createTemplate(position, this.editor, oldRange)
@@ -128,8 +192,6 @@ export class Manager {
         for (var offset = 0; offset < template.content.length; offset++) {
           if (template.content[offset] != null) {
             const rowRange = this.editor.getBuffer().rangeForRow(adjustRange.start.row + offset)
-
-            // console.log(template, rowRange, `"${template.content[offset]}"`);
 
             this.editor.setTextInBufferRange(rowRange, template.content[offset], {
               normalizeLineEndings: false
